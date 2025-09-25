@@ -1,0 +1,10 @@
+{
+  "7e4dd5eb-fc2d-4733-afea-ff33852faa8c": {
+    "description": "Expose your Eagle library through WebDAV protocol for remote access and synchronization.",
+    "name": "{{manifest.app.name}}",
+    "serializedName": "manifest.app.name",
+    "versions": [
+      "v1.2.1"
+    ]
+  }
+}
