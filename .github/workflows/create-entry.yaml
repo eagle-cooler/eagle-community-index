@@ -1,0 +1,305 @@
+name: Create Index Entry
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository to create entry for (format: owner/repo)'
+        required: true
+        type: string
+        default: 'eagle-cooler/eagle-webdav'
+      entry_type:
+        description: 'Entry type'
+        required: true
+        type: choice
+        options:
+          - candidate
+          - primary
+        default: 'candidate'
+      force_update:
+        description: 'Force update existing entry'
+        required: false
+        type: boolean
+        default: false
+  
+  workflow_call:
+    inputs:
+      repository:
+        description: 'Repository to create entry for (format: owner/repo)'
+        required: true
+        type: string
+      entry_type:
+        description: 'Entry type (candidate or primary)'
+        required: true
+        type: string
+      force_update:
+        description: 'Force update existing entry'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  create-entry:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      entry-created: ${{ steps.create-entry.outputs.entry_created }}
+      entry-updated: ${{ steps.create-entry.outputs.entry_updated }}
+      plugin-id: ${{ steps.create-entry.outputs.plugin_id }}
+      entry-type: ${{ steps.create-entry.outputs.entry_type }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Validate inputs
+        run: |
+          REPO="${{ inputs.repository }}"
+          TYPE="${{ inputs.entry_type }}"
+          
+          if [[ ! "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
+            echo "ERROR: Invalid repository format. Expected 'owner/repo', got '$REPO'"
+            exit 1
+          fi
+          
+          if [[ "$TYPE" != "candidate" && "$TYPE" != "primary" ]]; then
+            echo "ERROR: Invalid entry type. Must be 'candidate' or 'primary', got '$TYPE'"
+            exit 1
+          fi
+          
+          echo "Repository format is valid: $REPO"
+          echo "Entry type is valid: $TYPE"
+      
+      - name: Verify repository using verification workflow
+        id: verify-repo
+        uses: ./.github/workflows/verify-plugin.yaml
+        with:
+          repository: ${{ inputs.repository }}
+          force_reverify: true
+      
+      - name: Check verification results
+        if: ${{ steps.verify-repo.outputs.verification-success != 'true' }}
+        run: |
+          echo "## ❌ Repository Verification Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ inputs.repository }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Repository failed verification checks" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verification Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.verify-repo.outputs.verification-output }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action Required:** Fix the issues above before creating an index entry." >> $GITHUB_STEP_SUMMARY
+          
+          echo "::error title=Repository Verification Failed::Repository ${{ inputs.repository }} failed verification and cannot be added to index"
+          exit 1
+      
+      - name: Check if repository is blacklisted
+        if: ${{ steps.verify-repo.outputs.is-blacklisted == 'true' }}
+        run: |
+          echo "## ⛔ Repository Blacklisted" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ inputs.repository }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** 🚫 BLACKLISTED" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** ${{ steps.verify-repo.outputs.blacklist-reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action Required:** Repository must be removed from blacklist before creating index entry." >> $GITHUB_STEP_SUMMARY
+          
+          echo "::error title=Repository Blacklisted::Repository ${{ inputs.repository }} is blacklisted and cannot be added to index"
+          exit 1
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+      
+      - name: Fetch repository manifest and release info
+        id: fetch-info
+        run: |
+          echo "Fetching manifest and release info for ${{ inputs.repository }}"
+          
+          # Fetch manifest.json
+          MANIFEST_URL="https://api.github.com/repos/${{ inputs.repository }}/contents/manifest.json"
+          MANIFEST_RESPONSE=$(curl -s -H "User-Agent: eagle-community-index-creator/1.0" "$MANIFEST_URL")
+          
+          if [ $? -ne 0 ]; then
+            echo "Failed to fetch manifest.json"
+            exit 1
+          fi
+          
+          # Decode manifest content
+          MANIFEST_CONTENT=$(echo "$MANIFEST_RESPONSE" | jq -r '.content' | base64 -d)
+          PLUGIN_ID=$(echo "$MANIFEST_CONTENT" | jq -r '.id')
+          PLUGIN_NAME=$(echo "$MANIFEST_CONTENT" | jq -r '.name')
+          PLUGIN_DESCRIPTION=$(echo "$MANIFEST_CONTENT" | jq -r '.description // ""')
+          PLUGIN_VERSION=$(echo "$MANIFEST_CONTENT" | jq -r '.version')
+          
+          # Create serialized name (replace spaces with dots, lowercase)
+          SERIALIZED_NAME=$(echo "$PLUGIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]/.*/g' | sed 's/[^a-z0-9.-]//g')
+          
+          # Fetch latest release info
+          RELEASE_URL="https://api.github.com/repos/${{ inputs.repository }}/releases"
+          RELEASE_RESPONSE=$(curl -s -H "User-Agent: eagle-community-index-creator/1.0" "$RELEASE_URL")
+          LATEST_VERSION=$(echo "$RELEASE_RESPONSE" | jq -r '.[0].tag_name')
+          
+          # Store outputs
+          echo "plugin_id=$PLUGIN_ID" >> $GITHUB_OUTPUT
+          echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+          echo "plugin_description=$PLUGIN_DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "plugin_version=$PLUGIN_VERSION" >> $GITHUB_OUTPUT
+          echo "serialized_name=$SERIALIZED_NAME" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          
+          echo "Plugin Info:"
+          echo "  ID: $PLUGIN_ID"
+          echo "  Name: $PLUGIN_NAME"
+          echo "  Description: $PLUGIN_DESCRIPTION"
+          echo "  Version: $PLUGIN_VERSION"
+          echo "  Serialized Name: $SERIALIZED_NAME"
+          echo "  Latest Release: $LATEST_VERSION"
+      
+      - name: Check if entry already exists
+        id: check-existing
+        run: |
+          PLUGIN_ID="${{ steps.fetch-info.outputs.plugin_id }}"
+          ENTRY_TYPE="${{ inputs.entry_type }}"
+          
+          # Check alldex.json
+          if [ -f "index/alldex.json" ]; then
+            EXISTING_TYPE=$(jq -r --arg id "$PLUGIN_ID" '.[$id] // "none"' index/alldex.json)
+            if [ "$EXISTING_TYPE" != "none" ] && [ "$EXISTING_TYPE" != "null" ]; then
+              echo "entry_exists=true" >> $GITHUB_OUTPUT
+              echo "existing_type=$EXISTING_TYPE" >> $GITHUB_OUTPUT
+              echo "Plugin '$PLUGIN_ID' already exists as '$EXISTING_TYPE'"
+            else
+              echo "entry_exists=false" >> $GITHUB_OUTPUT
+              echo "existing_type=none" >> $GITHUB_OUTPUT
+              echo "Plugin '$PLUGIN_ID' does not exist in index"
+            fi
+          else
+            echo "entry_exists=false" >> $GITHUB_OUTPUT
+            echo "existing_type=none" >> $GITHUB_OUTPUT
+            echo "alldex.json not found, treating as new entry"
+          fi
+      
+      - name: Handle existing entry
+        if: ${{ steps.check-existing.outputs.entry_exists == 'true' && !inputs.force_update }}
+        run: |
+          EXISTING_TYPE="${{ steps.check-existing.outputs.existing_type }}"
+          REQUESTED_TYPE="${{ inputs.entry_type }}"
+          
+          echo "## ⚠️ Entry Already Exists" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Plugin ID:** \`${{ steps.fetch-info.outputs.plugin_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Existing Type:** $EXISTING_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "**Requested Type:** $REQUESTED_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action Required:** Use \`force_update: true\` to update the existing entry." >> $GITHUB_STEP_SUMMARY
+          
+          echo "::error title=Entry Already Exists::Plugin ${{ steps.fetch-info.outputs.plugin_id }} already exists as $EXISTING_TYPE"
+          exit 1
+      
+      - name: Create or update index entry
+        id: create-entry
+        run: |
+          PLUGIN_ID="${{ steps.fetch-info.outputs.plugin_id }}"
+          PLUGIN_NAME="${{ steps.fetch-info.outputs.plugin_name }}"
+          PLUGIN_DESCRIPTION="${{ steps.fetch-info.outputs.plugin_description }}"
+          SERIALIZED_NAME="${{ steps.fetch-info.outputs.serialized_name }}"
+          LATEST_VERSION="${{ steps.fetch-info.outputs.latest_version }}"
+          ENTRY_TYPE="${{ inputs.entry_type }}"
+          
+          # Create entry object
+          ENTRY_DATA=$(jq -n \
+            --arg name "$PLUGIN_NAME" \
+            --arg desc "$PLUGIN_DESCRIPTION" \
+            --arg serial "$SERIALIZED_NAME" \
+            --arg version "$LATEST_VERSION" \
+            '{
+              name: $name,
+              description: $desc,
+              serializedName: $serial,
+              versions: [$version]
+            }')
+          
+          # Update alldex.json
+          if [ -f "index/alldex.json" ]; then
+            jq --arg id "$PLUGIN_ID" --arg type "$ENTRY_TYPE" '.[$id] = $type' index/alldex.json > temp_alldex.json
+            mv temp_alldex.json index/alldex.json
+          else
+            jq -n --arg id "$PLUGIN_ID" --arg type "$ENTRY_TYPE" '{($id): $type}' > index/alldex.json
+          fi
+          
+          # Update the appropriate index file (candidates.json or primary.json)
+          INDEX_FILE="index/${ENTRY_TYPE}.json"
+          
+          if [ -f "$INDEX_FILE" ]; then
+            # Check if entry exists and merge versions
+            EXISTING_ENTRY=$(jq --arg id "$PLUGIN_ID" '.[$id] // null' "$INDEX_FILE")
+            
+            if [ "$EXISTING_ENTRY" != "null" ]; then
+              # Merge versions, keeping latest at front
+              EXISTING_VERSIONS=$(echo "$EXISTING_ENTRY" | jq -r '.versions[]')
+              ALL_VERSIONS=$(echo -e "$LATEST_VERSION\n$EXISTING_VERSIONS" | sort -V -r | uniq)
+              
+              UPDATED_ENTRY=$(echo "$ENTRY_DATA" | jq --argjson versions "$(echo "$ALL_VERSIONS" | jq -R . | jq -s .)" '.versions = $versions')
+              
+              jq --arg id "$PLUGIN_ID" --argjson entry "$UPDATED_ENTRY" '.[$id] = $entry' "$INDEX_FILE" > "temp_${ENTRY_TYPE}.json"
+              mv "temp_${ENTRY_TYPE}.json" "$INDEX_FILE"
+              
+              echo "entry_created=false" >> $GITHUB_OUTPUT
+              echo "entry_updated=true" >> $GITHUB_OUTPUT
+            else
+              # New entry
+              jq --arg id "$PLUGIN_ID" --argjson entry "$ENTRY_DATA" '.[$id] = $entry' "$INDEX_FILE" > "temp_${ENTRY_TYPE}.json"
+              mv "temp_${ENTRY_TYPE}.json" "$INDEX_FILE"
+              
+              echo "entry_created=true" >> $GITHUB_OUTPUT
+              echo "entry_updated=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Create new index file
+            jq -n --arg id "$PLUGIN_ID" --argjson entry "$ENTRY_DATA" '{($id): $entry}' > "$INDEX_FILE"
+            
+            echo "entry_created=true" >> $GITHUB_OUTPUT
+            echo "entry_updated=false" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "plugin_id=$PLUGIN_ID" >> $GITHUB_OUTPUT
+          echo "entry_type=$ENTRY_TYPE" >> $GITHUB_OUTPUT
+          
+          echo "Successfully created/updated entry for $PLUGIN_ID in $ENTRY_TYPE index"
+      
+      - name: Create entry summary
+        run: |
+          ACTION="${{ steps.create-entry.outputs.entry_created == 'true' && 'Created' || 'Updated' }}"
+          
+          echo "## ✅ Index Entry $ACTION" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ inputs.repository }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Plugin ID:** \`${{ steps.fetch-info.outputs.plugin_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Plugin Name:** ${{ steps.fetch-info.outputs.plugin_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Entry Type:** ${{ inputs.entry_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Latest Version:** ${{ steps.fetch-info.outputs.latest_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Serialized Name:** ${{ steps.fetch-info.outputs.serialized_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files Updated" >> $GITHUB_STEP_SUMMARY
+          echo "- \`index/alldex.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`index/${{ inputs.entry_type }}.json\`" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          git add index/alldex.json index/${{ inputs.entry_type }}.json
+          
+          ACTION="${{ steps.create-entry.outputs.entry_created == 'true' && 'Add' || 'Update' }}"
+          git commit -m "$ACTION ${{ inputs.entry_type }} entry: ${{ steps.fetch-info.outputs.plugin_id }} from ${{ inputs.repository }}" || echo "No changes to commit"
+          git push || echo "No changes to push"
