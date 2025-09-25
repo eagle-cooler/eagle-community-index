@@ -1,3 +1,8 @@
 [
-    
+  {
+    "repository": "eagle-cooler/powerplugin-swap-type",
+    "reason": "Multiple consecutive verification failures",
+    "blacklisted_at": "2025-09-25T23:12:11Z",
+    "blacklisted_by_run": "https://github.com/eagle-cooler/eagle-community-index/actions/runs/18023078553"
+  }
 ]
