@@ -218,10 +218,9 @@ class IndexEntryCreator:
     
     def _create_serialized_name(self, name: str) -> str:
         """Create serialized name from plugin name."""
-        # Convert to lowercase, replace spaces with dots, remove non-alphanumeric except dots and dashes
-        serialized = name.lower()
-        serialized = re.sub(r'\s+', '.', serialized)  # spaces to dots
-        serialized = re.sub(r'[^a-z0-9.-]', '', serialized)  # keep only alphanumeric, dots, dashes
+        # Replace spaces with dots, remove non-alphanumeric except dots and dashes (preserve case)
+        serialized = re.sub(r'\s+', '.', name)  # spaces to dots
+        serialized = re.sub(r'[^a-zA-Z0-9.-]', '', serialized)  # keep only alphanumeric, dots, dashes
         serialized = re.sub(r'\.+', '.', serialized)  # collapse multiple dots
         serialized = serialized.strip('.')  # remove leading/trailing dots
         return serialized
