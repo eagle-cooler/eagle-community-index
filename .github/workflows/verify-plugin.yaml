@@ -90,9 +90,11 @@ jobs:
           echo "Found cached verification results for ${{ inputs.repository }}"
           SHOULD_REVERIFY="false"
           
-          if [ -f "verification-cache/plugverify_${{ inputs.repository }}.json" ]; then
+          REPO_SANITIZED=$(echo "${{ inputs.repository }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          
+          if [ -f "verification-cache/plugverify_${REPO_SANITIZED}.json" ]; then
             # Check if cached result was a success
-            CACHED_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${{ inputs.repository }}.json")
+            CACHED_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${REPO_SANITIZED}.json")
             
             if [ "$CACHED_SUCCESS" = "false" ]; then
               echo "Cached result shows FAILED verification - will re-run verification"
@@ -106,7 +108,7 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "### Cached Results" >> $GITHUB_STEP_SUMMARY
               echo '```json' >> $GITHUB_STEP_SUMMARY
-              cat "verification-cache/plugverify_${{ inputs.repository }}.json" >> $GITHUB_STEP_SUMMARY
+              cat "verification-cache/plugverify_${REPO_SANITIZED}.json" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
             fi
           else
@@ -192,7 +194,7 @@ jobs:
           # Create results file with sanitized repository name for filename
           REPO_SANITIZED=$(echo "${{ inputs.repository }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
           
-          cat > verification-cache/plugverify_${{ inputs.repository }}.json << EOF
+          cat > verification-cache/plugverify_${REPO_SANITIZED}.json << EOF
           {
             "repository": "${{ inputs.repository }}",
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -204,7 +206,7 @@ jobs:
           }
           EOF
           
-          echo "Created verification results for cache key: plugverify_${{ inputs.repository }}"
+          echo "Created verification results for cache key: plugverify_${REPO_SANITIZED}"
       
       - name: Check for second failure and blacklist if needed
         if: ${{ always() && steps.verify.outputs.success == 'false' && steps.blacklist-check.outputs.is_blacklisted != 'true' }}
@@ -213,9 +215,10 @@ jobs:
           
           # Check if this is a second failure by looking at cached results
           SHOULD_BLACKLIST="false"
+          REPO_SANITIZED=$(echo "${{ inputs.repository }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
           
-          if [ -f "verification-cache/plugverify_${{ inputs.repository }}.json" ]; then
-            PREVIOUS_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${{ inputs.repository }}.json")
+          if [ -f "verification-cache/plugverify_${REPO_SANITIZED}.json" ]; then
+            PREVIOUS_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${REPO_SANITIZED}.json")
             if [ "$PREVIOUS_SUCCESS" = "false" ]; then
               echo "This is the second consecutive failure - adding to blacklist"
               SHOULD_BLACKLIST="true"
