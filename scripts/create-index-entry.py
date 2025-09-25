@@ -124,7 +124,7 @@ class IndexEntryCreator:
             
             # Create/update the entry
             success, timestamps = self._update_index_files(plugin_id, plugin_name, plugin_description, 
-                                                          serialized_name, latest_version, entry_type, existing_type)
+                                                          serialized_name, latest_version, entry_type, existing_type, repo_name)
             
             if success:
                 action = "Updated" if existing_type else "Created"
@@ -238,7 +238,7 @@ class IndexEntryCreator:
     
     def _update_index_files(self, plugin_id: str, name: str, description: str, 
                            serialized_name: str, latest_version: str, entry_type: str, 
-                           existing_type: Optional[str]) -> Tuple[bool, dict]:
+                           existing_type: Optional[str], repository: str = None) -> Tuple[bool, dict]:
         """Update alldex.json and the appropriate index file."""
         try:
             # Update alldex.json
@@ -270,6 +270,7 @@ class IndexEntryCreator:
                 'name': name,
                 'description': description,
                 'serializedName': serialized_name,
+                'repository': repository,
                 'versions': [latest_version],
                 'lastModified': current_timestamp
             }

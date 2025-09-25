@@ -45,6 +45,7 @@ jobs:
     outputs:
       entry-created: ${{ steps.create-entry.outputs.entry_created }}
       entry-updated: ${{ steps.create-entry.outputs.entry_updated }}
+      repository: ${{ steps.create-entry.outputs.repository }}
       plugin-id: ${{ steps.create-entry.outputs.plugin_id }}
       entry-type: ${{ steps.create-entry.outputs.entry_type }}
     
@@ -129,6 +130,7 @@ jobs:
           
           # Set outputs
           echo "success=$([ $EXIT_CODE -eq 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "repository=${{ inputs.repository }}" >> $GITHUB_OUTPUT
           echo "plugin_id=$PLUGIN_ID" >> $GITHUB_OUTPUT
           echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
           echo "entry_type=$ENTRY_TYPE" >> $GITHUB_OUTPUT
