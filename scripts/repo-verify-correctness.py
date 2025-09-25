@@ -38,6 +38,12 @@ class RepoVerifier:
         issues = []
         
         try:
+            # First check if repository exists at all
+            repo_exists, repo_issues = self._check_repository_exists(repo_name)
+            if not repo_exists:
+                issues.extend(repo_issues)
+                return False, issues
+            
             # Check latest release
             release_valid, release_issues = self._check_latest_release(repo_name)
             if not release_valid:
@@ -58,6 +64,27 @@ class RepoVerifier:
             return False, issues
         
         return len(issues) == 0, issues
+    
+    def _check_repository_exists(self, repo_name: str) -> Tuple[bool, List[str]]:
+        """Check if the repository exists and is accessible."""
+        issues = []
+        
+        # Check basic repository info
+        url = f"https://api.github.com/repos/{repo_name}"
+        response = self.session.get(url)
+        
+        if response.status_code == 404:
+            issues.append(f"Repository '{repo_name}' does not exist or is not publicly accessible")
+            return False, issues
+        elif response.status_code == 403:
+            issues.append(f"Access forbidden to repository '{repo_name}' (may be private or rate limited)")
+            return False, issues
+        elif response.status_code != 200:
+            issues.append(f"Failed to access repository '{repo_name}': HTTP {response.status_code}")
+            return False, issues
+        
+        # Repository exists and is accessible
+        return True, issues
     
     def _check_latest_release(self, repo_name: str) -> Tuple[bool, List[str]]:
         """Check if latest release meets requirements."""
@@ -88,6 +115,11 @@ class RepoVerifier:
         
         if author_login != 'github-actions[bot]':
             issues.append(f"Latest release not uploaded by github-actions[bot] (found: {author_login})")
+        
+        # Check if release tag follows version format (starts with 'v' and contains only numbers and dots)
+        tag_name = latest_release.get('tag_name', '')
+        if not self._is_valid_version_tag(tag_name):
+            issues.append(f"Release tag '{tag_name}' does not follow version format (should start with 'v' and contain only numbers and dots, e.g., 'v1.2.3')")
         
         # Check if release contains .eagleplugin files
         assets = latest_release.get('assets', [])
@@ -168,6 +200,19 @@ class RepoVerifier:
         
         # File exists and contains valid JSON
         return True, issues
+    
+    def _is_valid_version_tag(self, tag: str) -> bool:
+        """Check if tag follows version format: starts with 'v' and contains only numbers and dots."""
+        import re
+        
+        if not tag:
+            return False
+        
+        # Pattern: starts with 'v', followed by one or more groups of digits separated by dots
+        # Examples: v1, v1.0, v1.2.3, v1.0.0-beta (but we'll be strict and only allow digits and dots)
+        pattern = r'^v\d+(\.\d+)*$'
+        
+        return bool(re.match(pattern, tag))
 
 
 def main():
@@ -194,6 +239,7 @@ def main():
         print("✅ Repository verification PASSED")
         print("All requirements met:")
         print("  - Latest release uploaded by github-actions[bot]")
+        print("  - Release tag follows version format (starts with 'v' and contains only numbers and dots)")
         print("  - Release contains .eagleplugin files") 
         print("  - GitHub Actions are configured")
         print("  - manifest.json exists at repository root and contains valid JSON")
