@@ -8,6 +8,11 @@ on:
         required: true
         type: string
         default: 'eagle-cooler/eagle-webdav'
+      force_reverify:
+        description: 'Force re-verification (ignore cached results)'
+        required: false
+        type: boolean
+        default: false
   
   workflow_call:
     inputs:
@@ -15,32 +20,117 @@ on:
         description: 'Repository to verify (format: owner/repo)'
         required: true
         type: string
+      force_reverify:
+        description: 'Force re-verification (ignore cached results)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   verify-plugin:
     runs-on: ubuntu-latest
     
     outputs:
-      verification-status: ${{ steps.verify.outputs.status }}
-      verification-output: ${{ steps.verify.outputs.output }}
-      verification-success: ${{ steps.verify.outputs.success }}
+      verification-status: ${{ steps.verify.outputs.status || (steps.blacklist-check.outputs.is_blacklisted == 'true' && '1' || '0') }}
+      verification-output: ${{ steps.verify.outputs.output || (steps.blacklist-check.outputs.is_blacklisted == 'true' && 'Repository is blacklisted' || '') }}
+      verification-success: ${{ steps.verify.outputs.success || (steps.blacklist-check.outputs.is_blacklisted == 'true' && 'false' || 'true') }}
+      is-blacklisted: ${{ steps.blacklist-check.outputs.is_blacklisted || 'false' }}
+      blacklist-reason: ${{ steps.blacklist-check.outputs.blacklist_reason || '' }}
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       
+      - name: Check if repository is blacklisted
+        id: blacklist-check
+        run: |
+          if [ -f "configs/blacklist_repos.json" ]; then
+            # Check if repo is in blacklist
+            if jq -e --arg repo "${{ inputs.repository }}" '.[] | select(.repository == $repo)' configs/blacklist_repos.json > /dev/null; then
+              echo "Repository ${{ inputs.repository }} is blacklisted"
+              echo "is_blacklisted=true" >> $GITHUB_OUTPUT
+              
+              # Get blacklist details
+              BLACKLIST_ENTRY=$(jq --arg repo "${{ inputs.repository }}" '.[] | select(.repository == $repo)' configs/blacklist_repos.json)
+              BLACKLIST_REASON=$(echo "$BLACKLIST_ENTRY" | jq -r '.reason // "Multiple verification failures"')
+              BLACKLIST_DATE=$(echo "$BLACKLIST_ENTRY" | jq -r '.blacklisted_at // "Unknown"')
+              
+              echo "blacklist_reason=$BLACKLIST_REASON" >> $GITHUB_OUTPUT
+              echo "blacklist_date=$BLACKLIST_DATE" >> $GITHUB_OUTPUT
+              
+              echo "## ⛔ Repository Blacklisted" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Repository:** \`${{ inputs.repository }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** 🚫 BLACKLISTED" >> $GITHUB_STEP_SUMMARY
+              echo "**Reason:** $BLACKLIST_REASON" >> $GITHUB_STEP_SUMMARY
+              echo "**Blacklisted Date:** $BLACKLIST_DATE" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**To resolve:** Repository owners must contact administrators to be removed from blacklist." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Repository not blacklisted, proceeding with verification"
+              echo "is_blacklisted=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No blacklist file found, proceeding with verification"
+            echo "is_blacklisted=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check for cached verification results
+        id: cache-check
+        if: ${{ !inputs.force_reverify && steps.blacklist-check.outputs.is_blacklisted != 'true' }}
+        uses: actions/cache/restore@v3
+        with:
+          path: verification-cache/
+          key: plugverify_${{ inputs.repository }}
+      
+      - name: Check cached results and determine if re-verification needed
+        id: cache-decision
+        if: steps.cache-check.outputs.cache-hit == 'true' && steps.blacklist-check.outputs.is_blacklisted != 'true'
+        run: |
+          echo "Found cached verification results for ${{ inputs.repository }}"
+          SHOULD_REVERIFY="false"
+          
+          if [ -f "verification-cache/plugverify_${{ inputs.repository }}.json" ]; then
+            # Check if cached result was a success
+            CACHED_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${{ inputs.repository }}.json")
+            
+            if [ "$CACHED_SUCCESS" = "false" ]; then
+              echo "Cached result shows FAILED verification - will re-run verification"
+              SHOULD_REVERIFY="true"
+            else
+              echo "Cached result shows PASSED verification - using cached results"
+              echo "## Cached Plugin Verification Results" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Repository:** \`${{ inputs.repository }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "**Note:** Using cached PASSED results. Use force_reverify to re-run." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Cached Results" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              cat "verification-cache/plugverify_${{ inputs.repository }}.json" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "Cache hit but no results file found - will re-run verification"
+            SHOULD_REVERIFY="true"
+          fi
+          
+          echo "should_reverify=$SHOULD_REVERIFY" >> $GITHUB_OUTPUT
+      
       - name: Set up Python
+        if: ${{ steps.blacklist-check.outputs.is_blacklisted != 'true' && (inputs.force_reverify || steps.cache-check.outputs.cache-hit != 'true' || steps.cache-decision.outputs.should_reverify == 'true') }}
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
       
       - name: Install dependencies
+        if: ${{ steps.blacklist-check.outputs.is_blacklisted != 'true' && (inputs.force_reverify || steps.cache-check.outputs.cache-hit != 'true' || steps.cache-decision.outputs.should_reverify == 'true') }}
         run: |
           python -m pip install --upgrade pip
           pip install requests
       
       - name: Validate repository format
         id: validate
+        if: ${{ steps.blacklist-check.outputs.is_blacklisted != 'true' && (inputs.force_reverify || steps.cache-check.outputs.cache-hit != 'true' || steps.cache-decision.outputs.should_reverify == 'true') }}
         run: |
           REPO="${{ inputs.repository }}"
           if [[ ! "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
@@ -51,6 +141,7 @@ jobs:
       
       - name: Run verification script
         id: verify
+        if: ${{ steps.blacklist-check.outputs.is_blacklisted != 'true' && (inputs.force_reverify || steps.cache-check.outputs.cache-hit != 'true' || steps.cache-decision.outputs.should_reverify == 'true') }}
         run: |
           echo "Verifying repository: ${{ inputs.repository }}"
           
@@ -92,19 +183,16 @@ jobs:
           echo "${{ steps.verify.outputs.output }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
       
-      - name: Upload verification results as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: verification-results-${{ github.run_id }}
-          path: |
-            scripts/repo-verify-correctness.py
-          retention-days: 30
-      
       - name: Create results file
         if: always()
         run: |
-          cat > verification-results.json << EOF
+          # Create cache directory
+          mkdir -p verification-cache
+          
+          # Create results file with sanitized repository name for filename
+          REPO_SANITIZED=$(echo "${{ inputs.repository }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          
+          cat > verification-cache/plugverify_${{ inputs.repository }}.json << EOF
           {
             "repository": "${{ inputs.repository }}",
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -115,14 +203,74 @@ jobs:
             "workflow_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
           EOF
+          
+          echo "Created verification results for cache key: plugverify_${{ inputs.repository }}"
       
-      - name: Upload results JSON
+      - name: Check for second failure and blacklist if needed
+        if: ${{ always() && steps.verify.outputs.success == 'false' && steps.blacklist-check.outputs.is_blacklisted != 'true' }}
+        run: |
+          echo "Verification failed for ${{ inputs.repository }}"
+          
+          # Check if this is a second failure by looking at cached results
+          SHOULD_BLACKLIST="false"
+          
+          if [ -f "verification-cache/plugverify_${{ inputs.repository }}.json" ]; then
+            PREVIOUS_SUCCESS=$(jq -r '.success' "verification-cache/plugverify_${{ inputs.repository }}.json")
+            if [ "$PREVIOUS_SUCCESS" = "false" ]; then
+              echo "This is the second consecutive failure - adding to blacklist"
+              SHOULD_BLACKLIST="true"
+            else
+              echo "This is the first failure after a success - not blacklisting yet"
+            fi
+          else
+            echo "No previous verification found - this is the first failure"
+          fi
+          
+          if [ "$SHOULD_BLACKLIST" = "true" ]; then
+            # Add to blacklist
+            CURRENT_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            
+            # Create blacklist entry
+            BLACKLIST_ENTRY=$(jq -n \
+              --arg repo "${{ inputs.repository }}" \
+              --arg reason "Multiple consecutive verification failures" \
+              --arg date "$CURRENT_DATE" \
+              --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              '{
+                repository: $repo,
+                reason: $reason,
+                blacklisted_at: $date,
+                blacklisted_by_run: $run_url
+              }')
+            
+            # Add to blacklist file
+            if [ -f "configs/blacklist_repos.json" ]; then
+              jq --argjson entry "$BLACKLIST_ENTRY" '. += [$entry]' configs/blacklist_repos.json > temp_blacklist.json
+              mv temp_blacklist.json configs/blacklist_repos.json
+            else
+              echo "[$BLACKLIST_ENTRY]" > configs/blacklist_repos.json
+            fi
+            
+            echo "## ⚠️ Repository Blacklisted Due to Multiple Failures" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Repository:** \`${{ inputs.repository }}\` has been **BLACKLISTED**" >> $GITHUB_STEP_SUMMARY
+            echo "**Reason:** Multiple consecutive verification failures" >> $GITHUB_STEP_SUMMARY
+            echo "**Action Required:** Repository owners must contact administrators to be removed from blacklist" >> $GITHUB_STEP_SUMMARY
+            
+            # Commit the blacklist change
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add configs/blacklist_repos.json
+            git commit -m "Auto-blacklist: ${{ inputs.repository }} after multiple failures" || echo "No changes to commit"
+            git push || echo "No changes to push"
+          fi
+      
+      - name: Cache verification results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v3
         with:
-          name: verification-results-json-${{ github.run_id }}
-          path: verification-results.json
-          retention-days: 30
+          path: verification-cache/
+          key: plugverify_${{ inputs.repository }}
 
   # Optional: Add a notification job for failed verifications
   notify-failure:
