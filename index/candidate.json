@@ -1,3 +1,12 @@
 {
-  
+  "7e4dd5eb-fc2d-4733-afea-ff33852faa8c": {
+    "createdAt": "2025-09-25T23:49:38.602544Z",
+    "description": "Expose your Eagle library through WebDAV protocol for remote access and synchronization.",
+    "lastModified": "2025-09-25T23:49:38.602544Z",
+    "name": "Eagle WebDAV",
+    "serializedName": "eagle.webdav",
+    "versions": [
+      "v1.2.1"
+    ]
+  }
 }
