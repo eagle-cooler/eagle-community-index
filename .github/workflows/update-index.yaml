@@ -1,0 +1,147 @@
+name: Update Index
+
+on:
+  workflow_dispatch:
+    inputs:
+      days_threshold:
+        description: 'Only update entries modified within this many days'
+        required: false
+        type: number
+        default: 3
+      max_updates:
+        description: 'Maximum number of entries to process (rate limiting)'
+        required: false
+        type: number
+        default: 200
+  
+  schedule:
+    # Run every 3 days at 6:00 AM UTC
+    - cron: '0 6 */3 * *'
+
+jobs:
+  update-index:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      entries-processed: ${{ steps.update-index.outputs.entries_processed }}
+      entries-updated: ${{ steps.update-index.outputs.entries_updated }}
+      entries-pruned: ${{ steps.update-index.outputs.entries_pruned }}
+      success: ${{ steps.update-index.outputs.success }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+      
+      - name: Update index
+        id: update-index
+        run: |
+          # Set default values for scheduled runs
+          DAYS_THRESHOLD="${{ inputs.days_threshold || '3' }}"
+          MAX_UPDATES="${{ inputs.max_updates || '200' }}"
+          
+          echo "Updating index with parameters:"
+          echo "  - Days threshold: $DAYS_THRESHOLD"
+          echo "  - Max updates: $MAX_UPDATES"
+          
+          # Build command arguments
+          ARGS="scripts/update-index.py --days $DAYS_THRESHOLD --max-updates $MAX_UPDATES"
+          
+          # Run the script and capture output
+          set +e  # Don't exit on error
+          OUTPUT=$(python $ARGS 2>&1)
+          EXIT_CODE=$?
+          set -e  # Re-enable exit on error
+          
+          echo "=== Update Results ==="
+          echo "$OUTPUT"
+          
+          # Extract summary information from output
+          ENTRIES_PROCESSED=$(echo "$OUTPUT" | grep -o "Total entries processed: [0-9]*" | grep -o "[0-9]*" || echo "0")
+          ENTRIES_UPDATED=$(echo "$OUTPUT" | grep -o "Entries updated: [0-9]*" | grep -o "[0-9]*" || echo "0")
+          ENTRIES_PRUNED=$(echo "$OUTPUT" | grep -o "Entries pruned: [0-9]*" | grep -o "[0-9]*" || echo "0")
+          
+          # Set outputs
+          echo "success=$([ $EXIT_CODE -eq 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "entries_processed=$ENTRIES_PROCESSED" >> $GITHUB_OUTPUT
+          echo "entries_updated=$ENTRIES_UPDATED" >> $GITHUB_OUTPUT
+          echo "entries_pruned=$ENTRIES_PRUNED" >> $GITHUB_OUTPUT
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Exit with the same code as the script
+          exit $EXIT_CODE
+      
+      - name: Create success summary
+        if: ${{ steps.update-index.outputs.success == 'true' }}
+        run: |
+          echo "## ✅ Index Update Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Parameters:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Days threshold: ${{ inputs.days_threshold || '3' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Max updates: ${{ inputs.max_updates || '200' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Results:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Entries processed: ${{ steps.update-index.outputs.entries_processed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Entries updated: ${{ steps.update-index.outputs.entries_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🗑️ Entries pruned: ${{ steps.update-index.outputs.entries_pruned }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files Potentially Modified" >> $GITHUB_STEP_SUMMARY
+          echo "- \`index/candidate.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`index/primary.json\`" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Create failure summary
+        if: ${{ steps.update-index.outputs.success != 'true' }}
+        run: |
+          echo "## ❌ Index Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Parameters:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Days threshold: ${{ inputs.days_threshold || '3' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Max updates: ${{ inputs.max_updates || '200' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Exit Code:** ${{ steps.update-index.outputs.exit_code }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the workflow logs for detailed error information." >> $GITHUB_STEP_SUMMARY
+      
+      - name: Commit changes
+        if: ${{ steps.update-index.outputs.success == 'true' && (steps.update-index.outputs.entries_updated != '0' || steps.update-index.outputs.entries_pruned != '0') }}
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          git add index/candidate.json index/primary.json
+          
+          # Create commit message
+          UPDATED="${{ steps.update-index.outputs.entries_updated }}"
+          PRUNED="${{ steps.update-index.outputs.entries_pruned }}"
+          
+          COMMIT_MSG="Update index: "
+          if [ "$UPDATED" != "0" ]; then
+            COMMIT_MSG="${COMMIT_MSG}${UPDATED} updated"
+          fi
+          if [ "$PRUNED" != "0" ]; then
+            if [ "$UPDATED" != "0" ]; then
+              COMMIT_MSG="${COMMIT_MSG}, "
+            fi
+            COMMIT_MSG="${COMMIT_MSG}${PRUNED} pruned"
+          fi
+          
+          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+          git push || echo "No changes to push"
+      
+      - name: No changes summary
+        if: ${{ steps.update-index.outputs.success == 'true' && steps.update-index.outputs.entries_updated == '0' && steps.update-index.outputs.entries_pruned == '0' }}
+        run: |
+          echo "## ℹ️ Index Update - No Changes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Index update completed successfully but no changes were needed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Entries processed:** ${{ steps.update-index.outputs.entries_processed }}" >> $GITHUB_STEP_SUMMARY
