@@ -34,7 +34,7 @@ class IndexUpdater:
         Update index entries.
         
         Args:
-            days_threshold: Only update entries modified within this many days
+            days_threshold: Only update entries that have NOT been modified for this many days
             max_updates: Maximum number of entries to update (rate limiting)
             
         Returns:
@@ -150,8 +150,8 @@ class IndexUpdater:
             try:
                 # Parse ISO timestamp
                 last_modified = datetime.fromisoformat(last_modified_str.replace('Z', '+00:00'))
-                if last_modified < cutoff_date:
-                    messages.append(f"  ⏭️  Skipping {plugin_id} (last modified {last_modified.strftime('%Y-%m-%d')}, older than {days_threshold} days)")
+                if last_modified >= cutoff_date:
+                    messages.append(f"  ⏭️  Skipping {plugin_id} (last modified {last_modified.strftime('%Y-%m-%d')}, updated within {days_threshold} days)")
                     entries_processed += 1
                     continue
             except Exception:
@@ -251,7 +251,7 @@ def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(description='Update Eagle Community Index entries')
     parser.add_argument('--days', type=int, default=3,
-                       help='Only update entries modified within this many days (default: 3)')
+                       help='Only update entries that have NOT been modified for this many days (default: 3)')
     parser.add_argument('--max-updates', type=int, default=200,
                        help='Maximum number of entries to process (default: 200)')
     
